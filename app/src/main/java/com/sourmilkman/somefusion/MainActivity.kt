@@ -27,13 +27,16 @@ import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.MeteringPointFactory
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -80,6 +83,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color as ComposeColor
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -94,6 +98,7 @@ import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -194,6 +199,8 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
     var camera by remember { mutableStateOf<Camera?>(null) }
     var status by remember { mutableStateOf("Ready") }
     var rawEnabled by remember { mutableStateOf(false) }
+    var peakingEnabled by remember { mutableStateOf(false) }
+    var peakingData by remember { mutableStateOf(FocusPeakingData.EMPTY) }
     var manualOpen by remember { mutableStateOf(true) }
     var isCapturing by remember { mutableStateOf(false) }
     var latestUri by remember { mutableStateOf<Uri?>(null) }
@@ -225,12 +232,25 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
             if (requestedRaw) {
                 captureBuilder.setOutputFormat(ImageCapture.OUTPUT_FORMAT_RAW_JPEG)
             }
+            val analysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+                .also {
+                    it.setAnalyzer(
+                        cameraExecutor,
+                        FocusPeakingAnalyzer(
+                            mainExecutor = ContextCompat.getMainExecutor(context),
+                            enabled = { peakingEnabled },
+                            onPeaks = { peakingData = it }
+                        )
+                    )
+                }
 
             try {
                 provider.unbindAll()
                 val capture = captureBuilder.build()
                 imageCapture = capture
-                camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, capture)
+                camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, capture, analysis)
                 applyCameraState(camera, selectedCamera, iso, shutterMs, ev, focus, wbMode, zoom)
                 status = if (requestedRaw) "RAW+JPEG ready" else "JPEG ready"
             } catch (error: Exception) {
@@ -290,12 +310,21 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
                 }
         )
 
+        if (peakingEnabled) {
+            FocusPeakingOverlay(peakingData)
+        }
+
         TopRail(
             rawEnabled = rawEnabled,
             rawAvailable = selectedCamera?.rawSupported == true,
+            peakingEnabled = peakingEnabled,
             status = status,
             onRawToggle = {
                 if (selectedCamera?.rawSupported == true) rawEnabled = !rawEnabled
+            },
+            onPeakingToggle = {
+                peakingEnabled = !peakingEnabled
+                if (!peakingEnabled) peakingData = FocusPeakingData.EMPTY
             },
             onManualToggle = { manualOpen = !manualOpen }
         )
@@ -367,8 +396,10 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
 private fun TopRail(
     rawEnabled: Boolean,
     rawAvailable: Boolean,
+    peakingEnabled: Boolean,
     status: String,
     onRawToggle: () -> Unit,
+    onPeakingToggle: () -> Unit,
     onManualToggle: () -> Unit
 ) {
     Row(
@@ -392,6 +423,12 @@ private fun TopRail(
                 enabled = rawAvailable,
                 onClick = onRawToggle,
                 label = { Text(if (rawAvailable) "RAW+JPEG" else "JPEG") },
+                colors = chipColors()
+            )
+            FilterChip(
+                selected = peakingEnabled,
+                onClick = onPeakingToggle,
+                label = { Text("PEAK") },
                 colors = chipColors()
             )
             IconButton(onClick = onManualToggle, modifier = Modifier.glassCircle()) {
@@ -489,6 +526,25 @@ private fun ManualPanel(
                     modifier = Modifier.weight(1f)
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun FocusPeakingOverlay(data: FocusPeakingData) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val radius = (size.minDimension * 0.0045f).coerceIn(2.2f, 5.5f)
+        data.points.forEach { point ->
+            val mapped = mapPeakToViewport(point, data.rotationDegrees)
+            drawCircle(
+                color = PeakingRed,
+                radius = radius,
+                center = androidx.compose.ui.geometry.Offset(
+                    x = mapped.x * size.width,
+                    y = mapped.y * size.height
+                ),
+                alpha = point.strength.coerceIn(0.32f, 0.86f)
+            )
         }
     }
 }
@@ -700,12 +756,14 @@ private fun applyCameraState(
     }
 
     val options = CaptureRequestOptions.Builder()
-    if (selected.manualSensor) {
+    if (selected.manualSensor && (iso > (selected.isoRange?.lower ?: 100) + 2 || shutterMs > 12f)) {
         options.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
         selected.isoRange?.let {
             options.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, iso.roundToInt().coerceIn(it.lower, it.upper))
         }
         options.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, (shutterMs * 1_000_000L).toLong())
+    } else {
+        options.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
     }
     if (focus > 0.02f && selected.manualFocus) {
         options.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
@@ -813,6 +871,97 @@ private data class LensInfo(
     val zoomRange: ClosedFloatingPointRange<Float>? = null
 )
 
+private class FocusPeakingAnalyzer(
+    private val mainExecutor: java.util.concurrent.Executor,
+    private val enabled: () -> Boolean,
+    private val onPeaks: (FocusPeakingData) -> Unit
+) : ImageAnalysis.Analyzer {
+    private var lastAnalysisMs = 0L
+
+    override fun analyze(image: ImageProxy) {
+        try {
+            if (!enabled()) {
+                return
+            }
+            val now = System.currentTimeMillis()
+            if (now - lastAnalysisMs < 90L) {
+                return
+            }
+            lastAnalysisMs = now
+            val data = detectFocusPeaks(image)
+            mainExecutor.execute { onPeaks(data) }
+        } finally {
+            image.close()
+        }
+    }
+}
+
+private fun detectFocusPeaks(image: ImageProxy): FocusPeakingData {
+    val plane = image.planes.firstOrNull() ?: return FocusPeakingData.EMPTY
+    val buffer = plane.buffer
+    val width = image.width
+    val height = image.height
+    val rowStride = plane.rowStride
+    val pixelStride = plane.pixelStride
+    val cols = 58
+    val rows = 88
+    val points = ArrayList<PeakPoint>(650)
+
+    fun luminance(x: Int, y: Int): Int {
+        val px = x.coerceIn(0, width - 1)
+        val py = y.coerceIn(0, height - 1)
+        return buffer.get(py * rowStride + px * pixelStride).toInt() and 0xFF
+    }
+
+    for (row in 2 until rows - 2) {
+        val y = ((row / rows.toFloat()) * height).roundToInt()
+        for (col in 2 until cols - 2) {
+            val x = ((col / cols.toFloat()) * width).roundToInt()
+            val center = luminance(x, y)
+            if (center < 18 || center > 238) continue
+            val dx = abs(luminance(x + 5, y) - luminance(x - 5, y))
+            val dy = abs(luminance(x, y + 5) - luminance(x, y - 5))
+            val diagonal = abs(luminance(x + 4, y + 4) - luminance(x - 4, y - 4))
+            val strength = dx + dy + diagonal
+            if (strength > 92) {
+                points += PeakPoint(
+                    x = col / cols.toFloat(),
+                    y = row / rows.toFloat(),
+                    strength = ((strength - 92) / 180f).coerceIn(0.34f, 0.88f)
+                )
+                if (points.size >= 650) {
+                    return FocusPeakingData(points, image.imageInfo.rotationDegrees)
+                }
+            }
+        }
+    }
+    return FocusPeakingData(points, image.imageInfo.rotationDegrees)
+}
+
+private fun mapPeakToViewport(point: PeakPoint, rotationDegrees: Int): PeakPoint {
+    return when (rotationDegrees) {
+        90 -> point.copy(x = point.y, y = 1f - point.x)
+        180 -> point.copy(x = 1f - point.x, y = 1f - point.y)
+        270 -> point.copy(x = 1f - point.y, y = point.x)
+        else -> point
+    }
+}
+
+private data class FocusPeakingData(
+    val points: List<PeakPoint>,
+    val rotationDegrees: Int
+) {
+    companion object {
+        val EMPTY = FocusPeakingData(emptyList(), 0)
+    }
+}
+
+private data class PeakPoint(
+    val x: Float,
+    val y: Float,
+    val strength: Float
+)
+
 private enum class WbMode(val label: String, val requestValue: Int) {
     Auto("AWB", CaptureRequest.CONTROL_AWB_MODE_AUTO),
     Day("DAY", CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT),
@@ -822,3 +971,4 @@ private enum class WbMode(val label: String, val requestValue: Int) {
 
 private val Accent = ComposeColor(0xFFD8A84E)
 private val Panel = ComposeColor(0xCC0D0F12)
+private val PeakingRed = ComposeColor(0xFFFF1736)

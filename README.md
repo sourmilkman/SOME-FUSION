@@ -21,6 +21,7 @@ The app is Android-only. The PC is only the development machine.
 - JPEG capture.
 - RAW+DNG plus JPEG when the selected camera reports support.
 - Core manual controls with unsupported controls shown disabled.
+- Focus peaking overlay with red highlights over sharp preview detail.
 - Visible build model and Git commit label in the UI.
 
 ## Install Output
