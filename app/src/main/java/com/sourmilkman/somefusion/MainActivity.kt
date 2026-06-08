@@ -61,8 +61,6 @@ import androidx.compose.material.icons.filled.Grid3x3
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -338,7 +336,7 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(horizontal = 18.dp, vertical = 16.dp),
+                .padding(horizontal = 10.dp, vertical = 10.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             AnimatedVisibility(visible = manualOpen) {
@@ -355,12 +353,13 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
                     onEv = { ev = it },
                     onFocus = { focus = it },
                     onWb = { wbMode = it },
-                    onZoom = { zoom = it }
+                    onZoom = { zoom = it },
+                    onClose = { manualOpen = false }
                 )
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
             LensRail(cameras, selectedCamera) { selectedCamera = it }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
             BottomDeck(
                 latestUri = latestUri,
                 isCapturing = isCapturing,
@@ -389,9 +388,9 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
             Text(
                 text = "${BuildConfig.BUILD_MODEL} / ${BuildConfig.BUILD_SHA}",
                 color = ComposeColor.White.copy(alpha = 0.55f),
-                fontSize = 10.sp,
+                fontSize = 8.sp,
                 letterSpacing = 0.sp,
-                modifier = Modifier.padding(top = 10.dp)
+                modifier = Modifier.padding(top = 6.dp)
             )
         }
     }
@@ -410,7 +409,7 @@ private fun TopRail(
     Row(
         modifier = Modifier
             .statusBarsPadding()
-            .padding(14.dp)
+            .padding(horizontal = 8.dp, vertical = 8.dp)
             .fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
@@ -419,39 +418,39 @@ private fun TopRail(
             "SOME FUSION",
             color = ComposeColor.White,
             fontWeight = FontWeight.SemiBold,
-            fontSize = 15.sp,
-            letterSpacing = 0.sp
+            fontSize = 12.sp,
+            letterSpacing = 0.sp,
+            maxLines = 1,
+            modifier = Modifier.weight(1f)
         )
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            CompactChip(
                 selected = rawEnabled && rawAvailable,
                 enabled = rawAvailable,
                 onClick = onRawToggle,
-                label = { Text(if (rawAvailable) "RAW+JPEG" else "JPEG") },
-                colors = chipColors()
+                label = if (rawAvailable) "RAW" else "JPG"
             )
-            FilterChip(
+            CompactChip(
                 selected = peakingEnabled,
                 onClick = onPeakingToggle,
-                label = { Text("PEAK") },
-                colors = chipColors()
+                label = "PEAK"
             )
-            IconButton(onClick = onManualToggle, modifier = Modifier.glassCircle()) {
-                Icon(Icons.Filled.Tune, contentDescription = "Manual controls", tint = ComposeColor.White)
+            IconButton(onClick = onManualToggle, modifier = Modifier.glassCircle(32.dp)) {
+                Icon(Icons.Filled.Tune, contentDescription = "Manual controls", tint = ComposeColor.White, modifier = Modifier.size(16.dp))
             }
-            IconButton(onClick = { }, modifier = Modifier.glassCircle()) {
-                Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = ComposeColor.White.copy(alpha = 0.78f))
+            IconButton(onClick = { }, modifier = Modifier.glassCircle(32.dp)) {
+                Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = ComposeColor.White.copy(alpha = 0.78f), modifier = Modifier.size(16.dp))
             }
         }
     }
     Text(
         text = status,
         color = ComposeColor.White.copy(alpha = 0.74f),
-        fontSize = 12.sp,
+        fontSize = 10.sp,
         letterSpacing = 0.sp,
         modifier = Modifier
             .statusBarsPadding()
-            .padding(top = 58.dp)
+            .padding(top = 44.dp)
             .fillMaxWidth(),
         textAlign = TextAlign.Center
     )
@@ -471,16 +470,25 @@ private fun ManualPanel(
     onEv: (Float) -> Unit,
     onFocus: (Float) -> Unit,
     onWb: (WbMode) -> Unit,
-    onZoom: (Float) -> Unit
+    onZoom: (Float) -> Unit,
+    onClose: () -> Unit
 ) {
     Column(
         modifier = Modifier
-            .clip(RoundedCornerShape(24.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(Panel)
-            .border(1.dp, ComposeColor.White.copy(alpha = 0.08f), RoundedCornerShape(24.dp))
-            .padding(horizontal = 16.dp, vertical = 14.dp)
+            .border(1.dp, ComposeColor.White.copy(alpha = 0.08f), RoundedCornerShape(14.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp)
             .fillMaxWidth()
     ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("MANUAL", color = ComposeColor.White.copy(alpha = 0.54f), fontSize = 8.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            CompactChip(selected = false, onClick = onClose, label = "HIDE")
+        }
         ControlSlider(
             label = "ISO",
             value = iso,
@@ -490,7 +498,7 @@ private fun ManualPanel(
             onValue = onIso
         )
         ControlSlider(
-            label = "SHUTTER",
+            label = "S",
             value = shutterMs,
             range = 1f..125f,
             enabled = selected?.manualSensor == true,
@@ -506,7 +514,7 @@ private fun ManualPanel(
             onValue = onEv
         )
         ControlSlider(
-            label = "FOCUS",
+            label = "FOC",
             value = focus,
             range = 0f..1f,
             enabled = selected?.manualFocus == true,
@@ -514,20 +522,19 @@ private fun ManualPanel(
             onValue = onFocus
         )
         ControlSlider(
-            label = "ZOOM",
+            label = "Z",
             value = zoom,
             range = selected?.zoomRange ?: 1f..1f,
             enabled = selected?.zoomRange?.let { it.endInclusive > it.start } == true,
             display = "%.1fx".format(zoom),
             onValue = onZoom
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth().padding(top = 2.dp)) {
             WbMode.entries.forEach { mode ->
-                FilterChip(
+                CompactChip(
                     selected = wbMode == mode,
                     onClick = { onWb(mode) },
-                    label = { Text(mode.label) },
-                    colors = chipColors(),
+                    label = mode.label,
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -587,8 +594,8 @@ private fun ControlSlider(
     display: String,
     onValue: (Float) -> Unit
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Text(label, color = ComposeColor.White.copy(alpha = if (enabled) 0.82f else 0.32f), fontSize = 11.sp, modifier = Modifier.width(72.dp))
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(25.dp)) {
+        Text(label, color = ComposeColor.White.copy(alpha = if (enabled) 0.82f else 0.32f), fontSize = 9.sp, modifier = Modifier.width(34.dp), maxLines = 1)
         Slider(
             value = value.coerceIn(range.start, range.endInclusive),
             onValueChange = onValue,
@@ -596,7 +603,7 @@ private fun ControlSlider(
             enabled = enabled,
             modifier = Modifier.weight(1f)
         )
-        Text(display, color = ComposeColor.White.copy(alpha = if (enabled) 0.82f else 0.32f), fontSize = 11.sp, textAlign = TextAlign.End, modifier = Modifier.width(64.dp))
+        Text(display, color = ComposeColor.White.copy(alpha = if (enabled) 0.82f else 0.32f), fontSize = 9.sp, textAlign = TextAlign.End, modifier = Modifier.width(42.dp), maxLines = 1)
     }
 }
 
@@ -606,20 +613,20 @@ private fun LensRail(cameras: List<LensInfo>, selected: LensInfo?, onSelect: (Le
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
             .background(ComposeColor.Black.copy(alpha = 0.52f))
-            .padding(6.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         cameras.forEach { lens ->
             Text(
                 text = lens.label,
                 color = if (lens.id == selected?.id) ComposeColor.Black else ComposeColor.White,
                 fontWeight = FontWeight.SemiBold,
-                fontSize = 13.sp,
+                fontSize = 11.sp,
                 modifier = Modifier
                     .clip(RoundedCornerShape(999.dp))
                     .background(if (lens.id == selected?.id) Accent else ComposeColor.Transparent)
                     .clickable { onSelect(lens) }
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
             )
         }
     }
@@ -639,22 +646,22 @@ private fun BottomDeck(
     ) {
         Box(
             Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(14.dp))
+                .size(40.dp)
+                .clip(RoundedCornerShape(10.dp))
                 .background(ComposeColor.White.copy(alpha = if (latestUri == null) 0.12f else 0.25f))
-                .border(1.dp, ComposeColor.White.copy(alpha = 0.14f), RoundedCornerShape(14.dp))
+                .border(1.dp, ComposeColor.White.copy(alpha = 0.14f), RoundedCornerShape(10.dp))
                 .clickable { onGallery() },
             contentAlignment = Alignment.Center
         ) {
-            Icon(Icons.Filled.Grid3x3, contentDescription = "Last photo", tint = ComposeColor.White.copy(alpha = 0.75f), modifier = Modifier.size(20.dp))
+            Icon(Icons.Filled.Grid3x3, contentDescription = "Last photo", tint = ComposeColor.White.copy(alpha = 0.75f), modifier = Modifier.size(16.dp))
         }
         Box(
             Modifier
-                .size(86.dp)
+                .size(70.dp)
                 .clip(CircleShape)
-                .border(4.dp, ComposeColor.White.copy(alpha = if (isCapturing) 0.38f else 0.86f), CircleShape)
+                .border(3.dp, ComposeColor.White.copy(alpha = if (isCapturing) 0.38f else 0.86f), CircleShape)
                 .clickable { onCapture() }
-                .padding(8.dp),
+                .padding(7.dp),
             contentAlignment = Alignment.Center
         ) {
             Box(
@@ -668,11 +675,11 @@ private fun BottomDeck(
             onClick = { },
             colors = ButtonDefaults.textButtonColors(contentColor = ComposeColor.White),
             modifier = Modifier
-                .height(48.dp)
-                .clip(RoundedCornerShape(14.dp))
+                .height(40.dp)
+                .clip(RoundedCornerShape(10.dp))
                 .background(ComposeColor.White.copy(alpha = 0.1f))
         ) {
-            Text("NATURAL", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            Text("NAT", fontSize = 9.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
         }
     }
 }
@@ -703,21 +710,46 @@ private fun PermissionScreen(onRequest: () -> Unit) {
     }
 }
 
-private fun Modifier.glassCircle(): Modifier = this
-    .size(42.dp)
+private fun Modifier.glassCircle(size: androidx.compose.ui.unit.Dp): Modifier = this
+    .size(size)
     .clip(CircleShape)
     .background(ComposeColor.Black.copy(alpha = 0.34f))
     .border(1.dp, ComposeColor.White.copy(alpha = 0.08f), CircleShape)
 
 @Composable
-private fun chipColors() = FilterChipDefaults.filterChipColors(
-    selectedContainerColor = Accent,
-    selectedLabelColor = ComposeColor.Black,
-    containerColor = ComposeColor.Black.copy(alpha = 0.34f),
-    labelColor = ComposeColor.White.copy(alpha = 0.86f),
-    disabledContainerColor = ComposeColor.Black.copy(alpha = 0.18f),
-    disabledLabelColor = ComposeColor.White.copy(alpha = 0.36f)
-)
+private fun CompactChip(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    val bg = when {
+        !enabled -> ComposeColor.Black.copy(alpha = 0.2f)
+        selected -> Accent
+        else -> ComposeColor.Black.copy(alpha = 0.42f)
+    }
+    val fg = when {
+        !enabled -> ComposeColor.White.copy(alpha = 0.34f)
+        selected -> ComposeColor.Black
+        else -> ComposeColor.White.copy(alpha = 0.88f)
+    }
+    Text(
+        text = label,
+        color = fg,
+        fontSize = 9.sp,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+        textAlign = TextAlign.Center,
+        modifier = modifier
+            .height(28.dp)
+            .clip(RoundedCornerShape(7.dp))
+            .background(bg)
+            .border(1.dp, ComposeColor.White.copy(alpha = if (selected) 0f else 0.14f), RoundedCornerShape(7.dp))
+            .clickable(enabled = enabled) { onClick() }
+            .padding(horizontal = 9.dp, vertical = 7.dp)
+    )
+}
 
 private fun discoverBackCameras(context: Context): List<LensInfo> {
     val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
