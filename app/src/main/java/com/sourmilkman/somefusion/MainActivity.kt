@@ -3,6 +3,7 @@ package com.sourmilkman.somefusion
 import android.Manifest
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.hardware.camera2.CameraCharacteristics
@@ -10,7 +11,6 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.net.Uri
 import android.os.Bundle
-import android.os.Environment
 import android.provider.MediaStore
 import android.util.Range
 import android.view.Window
@@ -23,7 +23,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
-import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -194,8 +193,9 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var camera by remember { mutableStateOf<Camera?>(null) }
     var status by remember { mutableStateOf("Ready") }
-    var rawEnabled by remember { mutableStateOf(true) }
+    var rawEnabled by remember { mutableStateOf(false) }
     var manualOpen by remember { mutableStateOf(true) }
+    var isCapturing by remember { mutableStateOf(false) }
     var latestUri by remember { mutableStateOf<Uri?>(null) }
     var iso by remember { mutableFloatStateOf(selectedCamera?.isoRange?.lower?.toFloat() ?: 100f) }
     var shutterMs by remember { mutableFloatStateOf(8f) }
@@ -329,19 +329,26 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
             Spacer(Modifier.height(12.dp))
             BottomDeck(
                 latestUri = latestUri,
+                isCapturing = isCapturing,
+                onGallery = { openGallery(context, latestUri) },
                 onCapture = {
+                    if (isCapturing) return@BottomDeck
                     val capture = imageCapture ?: return@BottomDeck
+                    isCapturing = true
                     status = "Capturing..."
                     takePhoto(
                         context = context,
                         imageCapture = capture,
-                        cameraExecutor = cameraExecutor,
                         rawEnabled = rawEnabled && selectedCamera?.rawSupported == true,
                         onSaved = { uri, message ->
+                            isCapturing = false
                             latestUri = uri ?: latestUri
                             status = message
                         },
-                        onError = { status = it }
+                        onError = {
+                            isCapturing = false
+                            status = it
+                        }
                     )
                 }
             )
@@ -534,7 +541,12 @@ private fun LensRail(cameras: List<LensInfo>, selected: LensInfo?, onSelect: (Le
 }
 
 @Composable
-private fun BottomDeck(latestUri: Uri?, onCapture: () -> Unit) {
+private fun BottomDeck(
+    latestUri: Uri?,
+    isCapturing: Boolean,
+    onGallery: () -> Unit,
+    onCapture: () -> Unit
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -545,7 +557,8 @@ private fun BottomDeck(latestUri: Uri?, onCapture: () -> Unit) {
                 .size(48.dp)
                 .clip(RoundedCornerShape(14.dp))
                 .background(ComposeColor.White.copy(alpha = if (latestUri == null) 0.12f else 0.25f))
-                .border(1.dp, ComposeColor.White.copy(alpha = 0.14f), RoundedCornerShape(14.dp)),
+                .border(1.dp, ComposeColor.White.copy(alpha = 0.14f), RoundedCornerShape(14.dp))
+                .clickable { onGallery() },
             contentAlignment = Alignment.Center
         ) {
             Icon(Icons.Filled.Grid3x3, contentDescription = "Last photo", tint = ComposeColor.White.copy(alpha = 0.75f), modifier = Modifier.size(20.dp))
@@ -554,7 +567,7 @@ private fun BottomDeck(latestUri: Uri?, onCapture: () -> Unit) {
             Modifier
                 .size(86.dp)
                 .clip(CircleShape)
-                .border(4.dp, ComposeColor.White.copy(alpha = 0.86f), CircleShape)
+                .border(4.dp, ComposeColor.White.copy(alpha = if (isCapturing) 0.38f else 0.86f), CircleShape)
                 .clickable { onCapture() }
                 .padding(8.dp),
             contentAlignment = Alignment.Center
@@ -563,7 +576,7 @@ private fun BottomDeck(latestUri: Uri?, onCapture: () -> Unit) {
                 Modifier
                     .fillMaxSize()
                     .clip(CircleShape)
-                    .background(ComposeColor.White.copy(alpha = 0.92f))
+                    .background(if (isCapturing) Accent.copy(alpha = 0.74f) else ComposeColor.White.copy(alpha = 0.92f))
             )
         }
         TextButton(
@@ -716,13 +729,13 @@ private fun tapFocus(camera: Camera?, previewView: PreviewView, x: Float, y: Flo
 private fun takePhoto(
     context: Context,
     imageCapture: ImageCapture,
-    cameraExecutor: ExecutorService,
     rawEnabled: Boolean,
     onSaved: (Uri?, String) -> Unit,
     onError: (String) -> Unit
 ) {
     val name = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.UK).format(System.currentTimeMillis())
     val jpegOptions = outputOptions(context, "SOMEFUSION_$name.jpg", "image/jpeg", "Pictures/SOME FUSION")
+    val callbackExecutor = ContextCompat.getMainExecutor(context)
 
     val callback = object : ImageCapture.OnImageSavedCallback {
         override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
@@ -730,16 +743,45 @@ private fun takePhoto(
         }
 
         override fun onError(exception: ImageCaptureException) {
-            onError("Capture failed: ${exception.message ?: "unknown error"}")
+            if (rawEnabled) {
+                imageCapture.takePicture(jpegOptions, callbackExecutor, object : ImageCapture.OnImageSavedCallback {
+                    override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                        onSaved(outputFileResults.savedUri, "RAW failed - saved JPEG")
+                    }
+
+                    override fun onError(jpegException: ImageCaptureException) {
+                        onError("Capture failed: ${jpegException.message ?: exception.message ?: "unknown error"}")
+                    }
+                })
+            } else {
+                onError("Capture failed: ${exception.message ?: "unknown error"}")
+            }
         }
     }
 
     if (rawEnabled) {
         val rawOptions = outputOptions(context, "SOMEFUSION_$name.dng", "image/x-adobe-dng", "Pictures/SOME FUSION/RAW")
-        imageCapture.takePicture(rawOptions, jpegOptions, cameraExecutor, callback)
+        imageCapture.takePicture(rawOptions, jpegOptions, callbackExecutor, callback)
     } else {
-        imageCapture.takePicture(jpegOptions, cameraExecutor, callback)
+        imageCapture.takePicture(jpegOptions, callbackExecutor, callback)
     }
+}
+
+private fun openGallery(context: Context, latestUri: Uri?) {
+    val intent = if (latestUri != null) {
+        Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(latestUri, "image/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    } else {
+        Intent(Intent.ACTION_VIEW, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+    }
+    runCatching { context.startActivity(intent) }
+        .recover {
+            context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                type = "image/*"
+            })
+        }
 }
 
 private fun outputOptions(
