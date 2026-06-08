@@ -83,7 +83,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color as ComposeColor
-import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -99,6 +99,11 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -533,17 +538,41 @@ private fun ManualPanel(
 @Composable
 private fun FocusPeakingOverlay(data: FocusPeakingData) {
     Canvas(modifier = Modifier.fillMaxSize()) {
-        val radius = (size.minDimension * 0.0045f).coerceIn(2.2f, 5.5f)
-        data.points.forEach { point ->
-            val mapped = mapPeakToViewport(point, data.rotationDegrees)
-            drawCircle(
+        val rotatedWidth = if (data.rotationDegrees == 90 || data.rotationDegrees == 270) data.sourceHeight else data.sourceWidth
+        val rotatedHeight = if (data.rotationDegrees == 90 || data.rotationDegrees == 270) data.sourceWidth else data.sourceHeight
+        if (rotatedWidth <= 0 || rotatedHeight <= 0) return@Canvas
+
+        val imageAspect = rotatedWidth / rotatedHeight.toFloat()
+        val canvasAspect = size.width / size.height
+        val scale: Float
+        val xOffset: Float
+        val yOffset: Float
+        if (imageAspect > canvasAspect) {
+            scale = size.height / rotatedHeight
+            xOffset = (size.width - rotatedWidth * scale) / 2f
+            yOffset = 0f
+        } else {
+            scale = size.width / rotatedWidth
+            xOffset = 0f
+            yOffset = (size.height - rotatedHeight * scale) / 2f
+        }
+
+        val strokeWidth = (size.minDimension * 0.0038f).coerceIn(2.0f, 4.6f)
+        data.marks.forEach { mark ->
+            val mapped = mapPeakToViewport(mark, data.rotationDegrees)
+            val cx = xOffset + mapped.x * rotatedWidth * scale
+            val cy = yOffset + mapped.y * rotatedHeight * scale
+            val length = (size.minDimension * (0.009f + mapped.strength * 0.012f)).coerceIn(6f, 18f)
+            val edgeAngle = mapped.angle + (Math.PI.toFloat() / 2f)
+            val dx = cos(edgeAngle) * length * 0.5f
+            val dy = sin(edgeAngle) * length * 0.5f
+            drawLine(
                 color = PeakingRed,
-                radius = radius,
-                center = androidx.compose.ui.geometry.Offset(
-                    x = mapped.x * size.width,
-                    y = mapped.y * size.height
-                ),
-                alpha = point.strength.coerceIn(0.32f, 0.86f)
+                start = androidx.compose.ui.geometry.Offset(cx - dx, cy - dy),
+                end = androidx.compose.ui.geometry.Offset(cx + dx, cy + dy),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round,
+                alpha = mapped.strength.coerceIn(0.32f, 0.86f)
             )
         }
     }
@@ -877,6 +906,7 @@ private class FocusPeakingAnalyzer(
     private val onPeaks: (FocusPeakingData) -> Unit
 ) : ImageAnalysis.Analyzer {
     private var lastAnalysisMs = 0L
+    private var previousMarks: List<PeakMark> = emptyList()
 
     override fun analyze(image: ImageProxy) {
         try {
@@ -888,7 +918,8 @@ private class FocusPeakingAnalyzer(
                 return
             }
             lastAnalysisMs = now
-            val data = detectFocusPeaks(image)
+            val data = detectFocusPeaks(image, previousMarks)
+            previousMarks = data.marks
             mainExecutor.execute { onPeaks(data) }
         } finally {
             image.close()
@@ -896,16 +927,16 @@ private class FocusPeakingAnalyzer(
     }
 }
 
-private fun detectFocusPeaks(image: ImageProxy): FocusPeakingData {
+private fun detectFocusPeaks(image: ImageProxy, previousMarks: List<PeakMark>): FocusPeakingData {
     val plane = image.planes.firstOrNull() ?: return FocusPeakingData.EMPTY
     val buffer = plane.buffer
     val width = image.width
     val height = image.height
     val rowStride = plane.rowStride
     val pixelStride = plane.pixelStride
-    val cols = 58
-    val rows = 88
-    val points = ArrayList<PeakPoint>(650)
+    val cols = 96
+    val rows = 144
+    val candidates = ArrayList<PeakCandidate>(cols * rows / 3)
 
     fun luminance(x: Int, y: Int): Int {
         val px = x.coerceIn(0, width - 1)
@@ -913,53 +944,127 @@ private fun detectFocusPeaks(image: ImageProxy): FocusPeakingData {
         return buffer.get(py * rowStride + px * pixelStride).toInt() and 0xFF
     }
 
-    for (row in 2 until rows - 2) {
+    for (row in 3 until rows - 3) {
         val y = ((row / rows.toFloat()) * height).roundToInt()
-        for (col in 2 until cols - 2) {
+        for (col in 3 until cols - 3) {
             val x = ((col / cols.toFloat()) * width).roundToInt()
+            val tl = luminance(x - 3, y - 3)
+            val tc = luminance(x, y - 3)
+            val tr = luminance(x + 3, y - 3)
+            val ml = luminance(x - 3, y)
             val center = luminance(x, y)
+            val mr = luminance(x + 3, y)
+            val bl = luminance(x - 3, y + 3)
+            val bc = luminance(x, y + 3)
+            val br = luminance(x + 3, y + 3)
             if (center < 18 || center > 238) continue
-            val dx = abs(luminance(x + 5, y) - luminance(x - 5, y))
-            val dy = abs(luminance(x, y + 5) - luminance(x, y - 5))
-            val diagonal = abs(luminance(x + 4, y + 4) - luminance(x - 4, y - 4))
-            val strength = dx + dy + diagonal
-            if (strength > 92) {
-                points += PeakPoint(
-                    x = col / cols.toFloat(),
-                    y = row / rows.toFloat(),
-                    strength = ((strength - 92) / 180f).coerceIn(0.34f, 0.88f)
+            val localMin = minOf(tl, tc, tr, ml, center, mr, bl, bc, br)
+            val localMax = maxOf(tl, tc, tr, ml, center, mr, bl, bc, br)
+            val localContrast = localMax - localMin
+            if (localContrast < 18) continue
+
+            val gx = -tl - 2 * ml - bl + tr + 2 * mr + br
+            val gy = -tl - 2 * tc - tr + bl + 2 * bc + br
+            val gradient = sqrt((gx * gx + gy * gy).toFloat())
+            val laplacian = abs(8 * center - tl - tc - tr - ml - mr - bl - bc - br)
+            val score = gradient + laplacian * 0.85f + localContrast * 1.25f
+            if (score > 70f) {
+                candidates += PeakCandidate(
+                    col = col,
+                    row = row,
+                    score = score,
+                    angle = atan2(gy.toFloat(), gx.toFloat())
                 )
-                if (points.size >= 650) {
-                    return FocusPeakingData(points, image.imageInfo.rotationDegrees)
-                }
             }
         }
     }
-    return FocusPeakingData(points, image.imageInfo.rotationDegrees)
+
+    if (candidates.isEmpty()) {
+        return FocusPeakingData(previousMarks.fade(0.58f), image.imageInfo.rotationDegrees, width, height)
+    }
+
+    var sum = 0f
+    candidates.forEach { sum += it.score }
+    val mean = sum / candidates.size
+    var variance = 0f
+    candidates.forEach {
+        val delta = it.score - mean
+        variance += delta * delta
+    }
+    val stdDev = sqrt(variance / candidates.size)
+    val adaptiveThreshold = max(96f, mean + stdDev * 1.18f)
+    val selected = candidates
+        .asSequence()
+        .filter { it.score >= adaptiveThreshold }
+        .sortedByDescending { it.score }
+        .take(1350)
+        .map {
+            PeakMark(
+                x = it.col / cols.toFloat(),
+                y = it.row / rows.toFloat(),
+                strength = ((it.score - adaptiveThreshold) / 240f).coerceIn(0.38f, 0.92f),
+                angle = it.angle
+            )
+        }
+        .toMutableList()
+
+    if (selected.size < 180) {
+        candidates
+            .sortedByDescending { it.score }
+            .take(260)
+            .forEach {
+                selected += PeakMark(
+                    x = it.col / cols.toFloat(),
+                    y = it.row / rows.toFloat(),
+                    strength = ((it.score - mean) / 260f).coerceIn(0.28f, 0.58f),
+                    angle = it.angle
+                )
+            }
+    }
+
+    val smoothed = selected + previousMarks.fade(0.38f).take(420)
+    return FocusPeakingData(smoothed, image.imageInfo.rotationDegrees, width, height)
 }
 
-private fun mapPeakToViewport(point: PeakPoint, rotationDegrees: Int): PeakPoint {
+private fun List<PeakMark>.fade(amount: Float): List<PeakMark> {
+    return mapNotNull {
+        val strength = it.strength * amount
+        if (strength < 0.2f) null else it.copy(strength = strength)
+    }
+}
+
+private fun mapPeakToViewport(point: PeakMark, rotationDegrees: Int): PeakMark {
     return when (rotationDegrees) {
-        90 -> point.copy(x = point.y, y = 1f - point.x)
+        90 -> point.copy(x = point.y, y = 1f - point.x, angle = point.angle + Math.PI.toFloat() / 2f)
         180 -> point.copy(x = 1f - point.x, y = 1f - point.y)
-        270 -> point.copy(x = 1f - point.y, y = point.x)
+        270 -> point.copy(x = 1f - point.y, y = point.x, angle = point.angle - Math.PI.toFloat() / 2f)
         else -> point
     }
 }
 
 private data class FocusPeakingData(
-    val points: List<PeakPoint>,
-    val rotationDegrees: Int
+    val marks: List<PeakMark>,
+    val rotationDegrees: Int,
+    val sourceWidth: Int,
+    val sourceHeight: Int
 ) {
     companion object {
-        val EMPTY = FocusPeakingData(emptyList(), 0)
+        val EMPTY = FocusPeakingData(emptyList(), 0, 0, 0)
     }
 }
 
-private data class PeakPoint(
+private data class PeakMark(
     val x: Float,
     val y: Float,
-    val strength: Float
+    val strength: Float,
+    val angle: Float
+)
+
+private data class PeakCandidate(
+    val col: Int,
+    val row: Int,
+    val score: Float,
+    val angle: Float
 )
 
 private enum class WbMode(val label: String, val requestValue: Int) {
