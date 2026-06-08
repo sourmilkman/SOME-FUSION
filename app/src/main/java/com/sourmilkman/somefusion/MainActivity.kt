@@ -54,6 +54,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -428,12 +429,14 @@ private fun TopRail(
                 selected = rawEnabled && rawAvailable,
                 enabled = rawAvailable,
                 onClick = onRawToggle,
-                label = if (rawAvailable) "RAW" else "JPG"
+                label = if (rawAvailable) "RAW" else "JPG",
+                minWidth = 44.dp
             )
             CompactChip(
                 selected = peakingEnabled,
                 onClick = onPeakingToggle,
-                label = "PEAK"
+                label = "PEAK",
+                minWidth = 48.dp
             )
             IconButton(onClick = onManualToggle, modifier = Modifier.glassCircle(32.dp)) {
                 Icon(Icons.Filled.Tune, contentDescription = "Manual controls", tint = ComposeColor.White, modifier = Modifier.size(16.dp))
@@ -487,7 +490,7 @@ private fun ManualPanel(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text("MANUAL", color = ComposeColor.White.copy(alpha = 0.54f), fontSize = 8.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-            CompactChip(selected = false, onClick = onClose, label = "HIDE")
+            CompactChip(selected = false, onClick = onClose, label = "HIDE", minWidth = 52.dp)
         }
         ControlSlider(
             label = "ISO",
@@ -535,7 +538,8 @@ private fun ManualPanel(
                     selected = wbMode == mode,
                     onClick = { onWb(mode) },
                     label = mode.label,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    minWidth = 0.dp
                 )
             }
         }
@@ -722,7 +726,8 @@ private fun CompactChip(
     onClick: () -> Unit,
     label: String,
     modifier: Modifier = Modifier,
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    minWidth: androidx.compose.ui.unit.Dp = 42.dp
 ) {
     val bg = when {
         !enabled -> ComposeColor.Black.copy(alpha = 0.2f)
@@ -737,17 +742,18 @@ private fun CompactChip(
     Text(
         text = label,
         color = fg,
-        fontSize = 9.sp,
+        fontSize = 10.sp,
         fontWeight = FontWeight.SemiBold,
         maxLines = 1,
         textAlign = TextAlign.Center,
         modifier = modifier
-            .height(28.dp)
+            .height(30.dp)
+            .widthIn(min = minWidth)
             .clip(RoundedCornerShape(7.dp))
             .background(bg)
             .border(1.dp, ComposeColor.White.copy(alpha = if (selected) 0f else 0.14f), RoundedCornerShape(7.dp))
             .clickable(enabled = enabled) { onClick() }
-            .padding(horizontal = 9.dp, vertical = 7.dp)
+            .padding(horizontal = 5.dp, vertical = 6.dp)
     )
 }
 
