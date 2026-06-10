@@ -97,6 +97,7 @@ import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -207,6 +208,7 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
     var peakingData by remember { mutableStateOf(FocusPeakingData.EMPTY) }
     var manualOpen by remember { mutableStateOf(true) }
     var isCapturing by remember { mutableStateOf(false) }
+    var captureFlash by remember { mutableStateOf(false) }
     var latestUri by remember { mutableStateOf<Uri?>(null) }
     var iso by remember { mutableFloatStateOf(selectedCamera?.isoRange?.lower?.toFloat() ?: 100f) }
     var shutterMs by remember { mutableFloatStateOf(8f) }
@@ -278,6 +280,13 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
         applyCameraState(camera, selectedCamera, iso, shutterMs, ev, focus, wbMode, zoom)
     }
 
+    LaunchedEffect(captureFlash) {
+        if (captureFlash) {
+            delay(95)
+            captureFlash = false
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             ProcessCameraProvider.getInstance(context).get().unbindAll()
@@ -316,6 +325,14 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
 
         if (peakingEnabled) {
             FocusPeakingOverlay(peakingData)
+        }
+
+        if (captureFlash) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(ComposeColor.White.copy(alpha = 0.58f))
+            )
         }
 
         TopRail(
@@ -376,6 +393,7 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
                         rawEnabled = rawEnabled && selectedCamera?.rawSupported == true,
                         onSaved = { uri, message ->
                             isCapturing = false
+                            captureFlash = true
                             latestUri = uri ?: latestUri
                             status = message
                         },
@@ -430,13 +448,13 @@ private fun TopRail(
                 enabled = rawAvailable,
                 onClick = onRawToggle,
                 label = if (rawAvailable) "RAW" else "JPG",
-                minWidth = 44.dp
+                minWidth = 48.dp
             )
             CompactChip(
                 selected = peakingEnabled,
                 onClick = onPeakingToggle,
                 label = "PEAK",
-                minWidth = 48.dp
+                minWidth = 54.dp
             )
             IconButton(onClick = onManualToggle, modifier = Modifier.glassCircle(32.dp)) {
                 Icon(Icons.Filled.Tune, contentDescription = "Manual controls", tint = ComposeColor.White, modifier = Modifier.size(16.dp))
@@ -490,7 +508,7 @@ private fun ManualPanel(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text("MANUAL", color = ComposeColor.White.copy(alpha = 0.54f), fontSize = 8.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-            CompactChip(selected = false, onClick = onClose, label = "HIDE", minWidth = 52.dp)
+            CompactChip(selected = false, onClick = onClose, label = "HIDE", minWidth = 56.dp)
         }
         ControlSlider(
             label = "ISO",
@@ -742,18 +760,18 @@ private fun CompactChip(
     Text(
         text = label,
         color = fg,
-        fontSize = 10.sp,
+        fontSize = 10.5.sp,
         fontWeight = FontWeight.SemiBold,
         maxLines = 1,
         textAlign = TextAlign.Center,
         modifier = modifier
-            .height(30.dp)
+            .height(32.dp)
             .widthIn(min = minWidth)
             .clip(RoundedCornerShape(7.dp))
             .background(bg)
             .border(1.dp, ComposeColor.White.copy(alpha = if (selected) 0f else 0.14f), RoundedCornerShape(7.dp))
             .clickable(enabled = enabled) { onClick() }
-            .padding(horizontal = 5.dp, vertical = 6.dp)
+            .padding(horizontal = 6.dp, vertical = 6.dp)
     )
 }
 
@@ -1072,12 +1090,13 @@ private fun List<PeakMark>.fade(amount: Float): List<PeakMark> {
 }
 
 private fun mapPeakToViewport(point: PeakMark, rotationDegrees: Int): PeakMark {
-    return when (rotationDegrees) {
+    val rotated = when (rotationDegrees) {
         90 -> point.copy(x = point.y, y = 1f - point.x, angle = point.angle + Math.PI.toFloat() / 2f)
         180 -> point.copy(x = 1f - point.x, y = 1f - point.y)
         270 -> point.copy(x = 1f - point.y, y = point.x, angle = point.angle - Math.PI.toFloat() / 2f)
         else -> point
     }
+    return rotated.copy(y = 1f - rotated.y, angle = -rotated.angle)
 }
 
 private data class FocusPeakingData(
