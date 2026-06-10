@@ -90,6 +90,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Observer
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.ExecutorService
@@ -201,6 +202,7 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
     var isCapturing by remember { mutableStateOf(false) }
     var captureFlash by remember { mutableStateOf(false) }
     var focusReticle by remember { mutableStateOf<Offset?>(null) }
+    var focusLocked by remember { mutableStateOf(false) }
     var latestUri by remember { mutableStateOf<Uri?>(null) }
     var iso by remember { mutableFloatStateOf(selectedCamera?.isoRange?.lower?.toFloat() ?: 100f) }
     var shutterMs by remember { mutableFloatStateOf(8f) }
@@ -208,6 +210,7 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
     var focus by remember { mutableFloatStateOf(0f) }
     var wbMode by remember { mutableStateOf(WbMode.Auto) }
     var zoom by remember { mutableFloatStateOf(1f) }
+    var liveZoomRange by remember { mutableStateOf(1f..1f) }
 
     fun bindCamera() {
         val cameraInfo = selectedCamera ?: return
@@ -236,7 +239,9 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
                 val capture = captureBuilder.build()
                 imageCapture = capture
                 camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, capture)
-                applyCameraState(camera, selectedCamera, iso, shutterMs, ev, focus, wbMode, effectiveZoom(zoom, focusZoomEnabled, selectedCamera))
+                liveZoomRange = currentZoomRange(camera)
+                zoom = zoom.coerceIn(liveZoomRange.start, liveZoomRange.endInclusive)
+                applyCameraState(camera, selectedCamera, iso, shutterMs, ev, focus, wbMode, effectiveZoom(zoom, focusZoomEnabled, liveZoomRange))
                 status = if (requestedRaw) "RAW+JPEG ready" else "JPEG ready"
             } catch (error: Exception) {
                 if (requestedRaw) {
@@ -255,8 +260,21 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
         bindCamera()
     }
 
-    LaunchedEffect(camera, iso, shutterMs, ev, focus, wbMode, zoom, focusZoomEnabled) {
-        applyCameraState(camera, selectedCamera, iso, shutterMs, ev, focus, wbMode, effectiveZoom(zoom, focusZoomEnabled, selectedCamera))
+    LaunchedEffect(camera, iso, shutterMs, ev, focus, wbMode, zoom, focusZoomEnabled, liveZoomRange) {
+        applyCameraState(camera, selectedCamera, iso, shutterMs, ev, focus, wbMode, effectiveZoom(zoom, focusZoomEnabled, liveZoomRange))
+    }
+
+    DisposableEffect(camera) {
+        val zoomState = camera?.cameraInfo?.zoomState
+        val observer = Observer<androidx.camera.core.ZoomState> {
+            val updated = it.minZoomRatio..it.maxZoomRatio
+            liveZoomRange = updated
+            zoom = zoom.coerceIn(updated.start, updated.endInclusive)
+        }
+        zoomState?.observe(lifecycleOwner, observer)
+        onDispose {
+            zoomState?.removeObserver(observer)
+        }
     }
 
     LaunchedEffect(captureFlash) {
@@ -266,8 +284,8 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
         }
     }
 
-    LaunchedEffect(focusReticle) {
-        if (focusReticle != null) {
+    LaunchedEffect(focusReticle, focusLocked) {
+        if (focusReticle != null && !focusLocked) {
             delay(850)
             focusReticle = null
         }
@@ -302,16 +320,27 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(camera) {
-                    detectTapGestures { offset ->
-                        tapFocus(camera, previewView, offset.x, offset.y)
-                        focusReticle = offset
-                        status = "Focus set"
-                    }
+                    detectTapGestures(
+                        onTap = { offset ->
+                            focusLocked = false
+                            focus = 0f
+                            tapFocus(camera, previewView, offset.x, offset.y)
+                            focusReticle = offset
+                            status = "Tap focus"
+                        },
+                        onLongPress = { offset ->
+                            focus = 0f
+                            lockFocus(camera, previewView, offset.x, offset.y)
+                            focusLocked = true
+                            focusReticle = offset
+                            status = "Focus locked"
+                        }
+                    )
                 }
         )
 
         focusReticle?.let {
-            FocusReticle(it)
+            FocusReticle(it, focusLocked)
         }
 
         if (captureFlash) {
@@ -333,7 +362,8 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
             onFocusZoomToggle = {
                 val next = !focusZoomEnabled
                 focusZoomEnabled = next
-                status = if (next) "Focus zoom on" else "Focus zoom off"
+                val focusZoom = effectiveZoom(zoom, next, liveZoomRange)
+                status = if (next) "Focus zoom ${"%.1f".format(focusZoom)}x" else "Focus zoom off"
             },
             onManualToggle = { manualOpen = !manualOpen }
         )
@@ -354,6 +384,7 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
                     focus = focus,
                     wbMode = wbMode,
                     zoom = zoom,
+                    zoomRange = liveZoomRange,
                     onIso = { iso = it },
                     onShutter = { shutterMs = it },
                     onEv = { ev = it },
@@ -474,6 +505,7 @@ private fun ManualPanel(
     focus: Float,
     wbMode: WbMode,
     zoom: Float,
+    zoomRange: ClosedFloatingPointRange<Float>,
     onIso: (Float) -> Unit,
     onShutter: (Float) -> Unit,
     onEv: (Float) -> Unit,
@@ -533,8 +565,8 @@ private fun ManualPanel(
         ControlSlider(
             label = "Z",
             value = zoom,
-            range = selected?.zoomRange ?: 1f..1f,
-            enabled = selected?.zoomRange?.let { it.endInclusive > it.start } == true,
+            range = zoomRange,
+            enabled = zoomRange.endInclusive > zoomRange.start,
             display = "%.1fx".format(zoom),
             onValue = onZoom
         )
@@ -553,16 +585,19 @@ private fun ManualPanel(
 }
 
 @Composable
-private fun FocusReticle(center: Offset) {
+private fun FocusReticle(center: Offset, locked: Boolean) {
     Canvas(modifier = Modifier.fillMaxSize()) {
         val radius = 34.dp.toPx()
         val tick = 10.dp.toPx()
-        val stroke = 2.dp.toPx()
+        val stroke = if (locked) 3.dp.toPx() else 2.dp.toPx()
         drawCircle(color = Accent, radius = radius, center = center, style = androidx.compose.ui.graphics.drawscope.Stroke(stroke))
         drawLine(Accent, Offset(center.x - radius - tick, center.y), Offset(center.x - radius + tick, center.y), stroke)
         drawLine(Accent, Offset(center.x + radius - tick, center.y), Offset(center.x + radius + tick, center.y), stroke)
         drawLine(Accent, Offset(center.x, center.y - radius - tick), Offset(center.x, center.y - radius + tick), stroke)
         drawLine(Accent, Offset(center.x, center.y + radius - tick), Offset(center.x, center.y + radius + tick), stroke)
+        if (locked) {
+            drawCircle(color = Accent, radius = 5.dp.toPx(), center = center)
+        }
     }
 }
 
@@ -789,7 +824,8 @@ private fun applyCameraState(
     zoom: Float
 ) {
     if (camera == null || selected == null) return
-    camera.cameraControl.setZoomRatio(zoom.coerceIn(selected.zoomRange ?: 1f..1f))
+    val zoomRange = currentZoomRange(camera)
+    camera.cameraControl.setZoomRatio(zoom.coerceIn(zoomRange.start, zoomRange.endInclusive))
     selected.evRange?.let {
         val exposureState = camera.cameraInfo.exposureState
         if (exposureState.isExposureCompensationSupported) {
@@ -820,12 +856,35 @@ private fun applyCameraState(
 }
 
 private fun tapFocus(camera: Camera?, previewView: PreviewView, x: Float, y: Float) {
+    camera ?: return
+    val options = CaptureRequestOptions.Builder()
+        .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+        .build()
+    Camera2CameraControl.from(camera.cameraControl).setCaptureRequestOptions(options)
     val factory: MeteringPointFactory = previewView.meteringPointFactory
     val point = factory.createPoint(x, y)
     val action = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
         .setAutoCancelDuration(3, TimeUnit.SECONDS)
         .build()
-    camera?.cameraControl?.startFocusAndMetering(action)
+    camera.cameraControl.startFocusAndMetering(action)
+}
+
+private fun lockFocus(camera: Camera?, previewView: PreviewView, x: Float, y: Float) {
+    camera ?: return
+    val options = CaptureRequestOptions.Builder()
+        .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+        .build()
+    Camera2CameraControl.from(camera.cameraControl).setCaptureRequestOptions(options)
+    val point = previewView.meteringPointFactory.createPoint(x, y)
+    val action = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
+        .disableAutoCancel()
+        .build()
+    camera.cameraControl.startFocusAndMetering(action)
+}
+
+private fun currentZoomRange(camera: Camera?): ClosedFloatingPointRange<Float> {
+    val zoomState = camera?.cameraInfo?.zoomState?.value ?: return 1f..1f
+    return zoomState.minZoomRatio..zoomState.maxZoomRatio
 }
 
 private fun takePhoto(
@@ -915,8 +974,7 @@ private data class LensInfo(
     val zoomRange: ClosedFloatingPointRange<Float>? = null
 )
 
-private fun effectiveZoom(baseZoom: Float, focusZoomEnabled: Boolean, selected: LensInfo?): Float {
-    val range = selected?.zoomRange ?: 1f..1f
+private fun effectiveZoom(baseZoom: Float, focusZoomEnabled: Boolean, range: ClosedFloatingPointRange<Float>): Float {
     return if (focusZoomEnabled) {
         10f.coerceIn(range.start, range.endInclusive)
     } else {
