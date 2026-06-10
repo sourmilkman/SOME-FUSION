@@ -9,7 +9,7 @@ Open this folder in Android Studio and run the `app` configuration on a connecte
 Command-line debug build:
 
 ```powershell
-$env:JAVA_HOME="C:\Users\Tom\.antigravity\extensions\redhat.java-1.54.0-win32-x64\jre\21.0.10-win32-x86_64"
+$env:JAVA_HOME="C:\Users\Tom\.bubblewrap\jdk\jdk-17.0.11+9"
 .\gradlew.bat :app:assembleDebug
 ```
 
@@ -21,7 +21,8 @@ The app is Android-only. The PC is only the development machine.
 - JPEG capture.
 - RAW+DNG plus JPEG when the selected camera reports support.
 - Core manual controls with unsupported controls shown disabled.
-- Focus peaking overlay with red highlights over sharp preview detail.
+- Focus zoom toggle for manual focus assist.
+- Tap-to-focus with a visible focus reticle.
 - Visible build model and Git commit label in the UI.
 
 ## Install Output
