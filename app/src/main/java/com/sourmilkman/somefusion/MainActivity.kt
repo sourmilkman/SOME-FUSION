@@ -33,6 +33,13 @@ import androidx.camera.core.MeteringPointFactory
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.camera.video.MediaStoreOutputOptions
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
+import androidx.camera.video.Recorder
+import androidx.camera.video.Recording
+import androidx.camera.video.VideoCapture
+import androidx.camera.video.VideoRecordEvent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -58,6 +65,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Grid3x3
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -194,6 +202,8 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
     val cameras = remember { discoverBackCameras(context) }
     var selectedCamera by remember { mutableStateOf(cameras.firstOrNull()) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
+    var activeRecording by remember { mutableStateOf<Recording?>(null) }
+    var pendingSpyRecording by remember { mutableStateOf(false) }
     var camera by remember { mutableStateOf<Camera?>(null) }
     var status by remember { mutableStateOf("Ready") }
     var rawEnabled by remember { mutableStateOf(false) }
@@ -211,6 +221,40 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
     var wbMode by remember { mutableStateOf(WbMode.Auto) }
     var zoom by remember { mutableFloatStateOf(1f) }
     var liveZoomRange by remember { mutableStateOf(1f..1f) }
+    var spyMode by remember { mutableStateOf(false) }
+
+    fun stopSpyRecording(message: String = "Spy recording saved") {
+        pendingSpyRecording = false
+        activeRecording?.stop()
+        activeRecording = null
+        spyMode = false
+        status = message
+    }
+
+    fun startSpyRecording(capture: VideoCapture<Recorder>) {
+        if (activeRecording != null) return
+        pendingSpyRecording = false
+        val outputOptions = videoOutputOptions(context)
+        activeRecording = capture.output
+            .prepareRecording(context, outputOptions)
+            .start(ContextCompat.getMainExecutor(context)) { event ->
+                when (event) {
+                    is VideoRecordEvent.Start -> status = "Spy recording"
+                    is VideoRecordEvent.Finalize -> {
+                        val savedUri = event.outputResults.outputUri
+                        if (savedUri != Uri.EMPTY) latestUri = savedUri
+                        activeRecording = null
+                        pendingSpyRecording = false
+                        if (event.hasError()) {
+                            spyMode = false
+                            status = "Spy failed: ${event.error}"
+                        } else {
+                            status = "Spy recording saved"
+                        }
+                    }
+                }
+            }
+    }
 
     fun bindCamera() {
         val cameraInfo = selectedCamera ?: return
@@ -233,16 +277,29 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
             if (requestedRaw) {
                 captureBuilder.setOutputFormat(ImageCapture.OUTPUT_FORMAT_RAW_JPEG)
             }
+            val recorder = Recorder.Builder()
+                .setQualitySelector(QualitySelector.from(Quality.HIGHEST))
+                .build()
+            val video = VideoCapture.withOutput(recorder)
 
             try {
                 provider.unbindAll()
-                val capture = captureBuilder.build()
-                imageCapture = capture
-                camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, capture)
-                liveZoomRange = currentZoomRange(camera)
-                zoom = zoom.coerceIn(liveZoomRange.start, liveZoomRange.endInclusive)
-                applyCameraState(camera, selectedCamera, iso, shutterMs, ev, focus, wbMode, effectiveZoom(zoom, focusZoomEnabled, liveZoomRange))
-                status = if (requestedRaw) "RAW+JPEG ready" else "JPEG ready"
+                if (spyMode) {
+                    imageCapture = null
+                    camera = provider.bindToLifecycle(lifecycleOwner, selector, video)
+                    liveZoomRange = currentZoomRange(camera)
+                    applyCameraState(camera, selectedCamera, iso, shutterMs, ev, focus, wbMode, effectiveZoom(zoom, focusZoomEnabled, liveZoomRange))
+                    status = "Spy camera ready"
+                    if (pendingSpyRecording) startSpyRecording(video)
+                } else {
+                    val capture = captureBuilder.build()
+                    imageCapture = capture
+                    camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, capture)
+                    liveZoomRange = currentZoomRange(camera)
+                    zoom = zoom.coerceIn(liveZoomRange.start, liveZoomRange.endInclusive)
+                    applyCameraState(camera, selectedCamera, iso, shutterMs, ev, focus, wbMode, effectiveZoom(zoom, focusZoomEnabled, liveZoomRange))
+                    status = if (requestedRaw) "RAW+JPEG ready" else "JPEG ready"
+                }
             } catch (error: Exception) {
                 if (requestedRaw) {
                     rawEnabled = false
@@ -255,7 +312,7 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
         }, ContextCompat.getMainExecutor(context))
     }
 
-    LaunchedEffect(selectedCamera?.id, rawEnabled) {
+    LaunchedEffect(selectedCamera?.id, rawEnabled, spyMode) {
         iso = selectedCamera?.isoRange?.lower?.toFloat() ?: 100f
         bindCamera()
     }
@@ -293,15 +350,23 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
 
     DisposableEffect(Unit) {
         onDispose {
+            activeRecording?.stop()
+            activeRecording = null
             ProcessCameraProvider.getInstance(context).get().unbindAll()
         }
     }
 
     Box(Modifier.fillMaxSize().background(ComposeColor.Black)) {
-        AndroidView(
-            factory = { previewView },
-            modifier = Modifier.fillMaxSize()
-        )
+        if (!spyMode) {
+            AndroidView(
+                factory = { previewView },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        if (spyMode) {
+            Box(Modifier.fillMaxSize().background(ComposeColor.Black))
+        }
 
         Box(
             Modifier
@@ -316,11 +381,12 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
                 )
         )
 
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(camera) {
-                    detectTapGestures(
+        if (!spyMode) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(camera) {
+                        detectTapGestures(
                         onTap = { offset ->
                             focusLocked = false
                             focus = 0f
@@ -335,9 +401,10 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
                             focusReticle = offset
                             status = "Focus locked"
                         }
-                    )
-                }
-        )
+                        )
+                    }
+            )
+        }
 
         focusReticle?.let {
             FocusReticle(it, focusLocked)
@@ -375,7 +442,7 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
                 .padding(horizontal = 10.dp, vertical = 10.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            AnimatedVisibility(visible = manualOpen) {
+            AnimatedVisibility(visible = manualOpen && !spyMode) {
                 ManualPanel(
                     selected = selectedCamera,
                     iso = iso,
@@ -395,12 +462,26 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
                 )
             }
             Spacer(Modifier.height(8.dp))
-            LensRail(cameras, selectedCamera) { selectedCamera = it }
-            Spacer(Modifier.height(8.dp))
+            if (!spyMode) {
+                LensRail(cameras, selectedCamera) { selectedCamera = it }
+                Spacer(Modifier.height(8.dp))
+            }
             BottomDeck(
                 latestUri = latestUri,
                 isCapturing = isCapturing,
+                spyMode = spyMode,
                 onGallery = { openGallery(context, latestUri) },
+                onSpy = {
+                    if (spyMode) {
+                        stopSpyRecording()
+                    } else {
+                        selectedCamera = oppositeCamera(cameras, selectedCamera)
+                        spyMode = true
+                        pendingSpyRecording = true
+                        manualOpen = false
+                        status = "Starting spy recording..."
+                    }
+                },
                 onCapture = {
                     if (isCapturing) return@BottomDeck
                     val capture = imageCapture ?: return@BottomDeck
@@ -652,7 +733,9 @@ private fun LensRail(cameras: List<LensInfo>, selected: LensInfo?, onSelect: (Le
 private fun BottomDeck(
     latestUri: Uri?,
     isCapturing: Boolean,
+    spyMode: Boolean,
     onGallery: () -> Unit,
+    onSpy: () -> Unit,
     onCapture: () -> Unit
 ) {
     Row(
@@ -666,36 +749,42 @@ private fun BottomDeck(
                 .clip(RoundedCornerShape(10.dp))
                 .background(ComposeColor.White.copy(alpha = if (latestUri == null) 0.12f else 0.25f))
                 .border(1.dp, ComposeColor.White.copy(alpha = 0.14f), RoundedCornerShape(10.dp))
-                .clickable { onGallery() },
+                .clickable(enabled = !spyMode) { onGallery() },
             contentAlignment = Alignment.Center
         ) {
             Icon(Icons.Filled.Grid3x3, contentDescription = "Last photo", tint = ComposeColor.White.copy(alpha = 0.75f), modifier = Modifier.size(16.dp))
         }
-        Box(
-            Modifier
-                .size(70.dp)
-                .clip(CircleShape)
-                .border(3.dp, ComposeColor.White.copy(alpha = if (isCapturing) 0.38f else 0.86f), CircleShape)
-                .clickable { onCapture() }
-                .padding(7.dp),
-            contentAlignment = Alignment.Center
-        ) {
+        if (!spyMode) {
             Box(
                 Modifier
-                    .fillMaxSize()
+                    .size(70.dp)
                     .clip(CircleShape)
-                    .background(if (isCapturing) Accent.copy(alpha = 0.74f) else ComposeColor.White.copy(alpha = 0.92f))
-            )
+                    .border(3.dp, ComposeColor.White.copy(alpha = if (isCapturing) 0.38f else 0.86f), CircleShape)
+                    .clickable { onCapture() }
+                    .padding(7.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .background(if (isCapturing) Accent.copy(alpha = 0.74f) else ComposeColor.White.copy(alpha = 0.92f))
+                )
+            }
+        } else {
+            Spacer(Modifier.width(70.dp))
         }
         TextButton(
-            onClick = { },
+            onClick = onSpy,
             colors = ButtonDefaults.textButtonColors(contentColor = ComposeColor.White),
             modifier = Modifier
                 .height(40.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(ComposeColor.White.copy(alpha = 0.1f))
         ) {
-            Text("NAT", fontSize = 9.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            Icon(Icons.Filled.VisibilityOff, contentDescription = "Spy mode", tint = if (spyMode) Accent else ComposeColor.White, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(4.dp))
+            Text(if (spyMode) "STOP" else "SPY", fontSize = 9.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
         }
     }
 }
@@ -773,7 +862,8 @@ private fun discoverBackCameras(context: Context): List<LensInfo> {
     val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     val lenses = manager.cameraIdList.mapNotNull { id ->
         val c = manager.getCameraCharacteristics(id)
-        if (c.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) return@mapNotNull null
+        val facing = c.get(CameraCharacteristics.LENS_FACING)
+        if (facing != CameraCharacteristics.LENS_FACING_BACK && facing != CameraCharacteristics.LENS_FACING_FRONT) return@mapNotNull null
         val capabilities = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toSet() ?: emptySet()
         val raw = capabilities.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
         val manualSensor = capabilities.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)
@@ -789,13 +879,14 @@ private fun discoverBackCameras(context: Context): List<LensInfo> {
         val focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()
         LensInfo(
             id = id,
-            label = labelForFocalLength(focal, id),
+            label = labelForFocalLength(focal, id, facing),
             rawSupported = raw,
             manualSensor = manualSensor,
             manualFocus = manualFocus,
             isoRange = iso,
             evRange = evRange,
-            zoomRange = 1f..10f
+            zoomRange = 1f..10f,
+            facing = facing
         )
     }
     return lenses.ifEmpty {
@@ -803,7 +894,8 @@ private fun discoverBackCameras(context: Context): List<LensInfo> {
     }
 }
 
-private fun labelForFocalLength(focalLength: Float?, fallback: String): String {
+private fun labelForFocalLength(focalLength: Float?, fallback: String, facing: Int?): String {
+    if (facing == CameraCharacteristics.LENS_FACING_FRONT) return "SELF"
     return when {
         focalLength == null -> fallback
         focalLength < 2.2f -> "0.6x"
@@ -945,6 +1037,21 @@ private fun openGallery(context: Context, latestUri: Uri?) {
         }
 }
 
+private fun videoOutputOptions(context: Context): MediaStoreOutputOptions {
+    val name = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.UK).format(System.currentTimeMillis())
+    val values = ContentValues().apply {
+        put(MediaStore.MediaColumns.DISPLAY_NAME, "SOMEFUSION_SPY_$name.mp4")
+        put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+        put(MediaStore.MediaColumns.RELATIVE_PATH, "Movies/SOME FUSION")
+    }
+    return MediaStoreOutputOptions.Builder(
+        context.contentResolver,
+        MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+    )
+        .setContentValues(values)
+        .build()
+}
+
 private fun outputOptions(
     context: Context,
     displayName: String,
@@ -971,8 +1078,18 @@ private data class LensInfo(
     val manualFocus: Boolean,
     val isoRange: Range<Int>? = null,
     val evRange: ClosedFloatingPointRange<Float>? = null,
-    val zoomRange: ClosedFloatingPointRange<Float>? = null
+    val zoomRange: ClosedFloatingPointRange<Float>? = null,
+    val facing: Int? = null
 )
+
+private fun oppositeCamera(cameras: List<LensInfo>, selected: LensInfo?): LensInfo? {
+    val oppositeFacing = when (selected?.facing) {
+        CameraCharacteristics.LENS_FACING_FRONT -> CameraCharacteristics.LENS_FACING_BACK
+        CameraCharacteristics.LENS_FACING_BACK -> CameraCharacteristics.LENS_FACING_FRONT
+        else -> null
+    }
+    return cameras.firstOrNull { it.facing == oppositeFacing } ?: cameras.firstOrNull { it.id != selected?.id } ?: selected
+}
 
 private fun effectiveZoom(baseZoom: Float, focusZoomEnabled: Boolean, range: ClosedFloatingPointRange<Float>): Float {
     return if (focusZoomEnabled) {
