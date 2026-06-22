@@ -203,6 +203,7 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
     var selectedCamera by remember { mutableStateOf(cameras.firstOrNull()) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var activeRecording by remember { mutableStateOf<Recording?>(null) }
+    var spyVideoCapture by remember { mutableStateOf<VideoCapture<Recorder>?>(null) }
     var pendingSpyRecording by remember { mutableStateOf(false) }
     var camera by remember { mutableStateOf<Camera?>(null) }
     var status by remember { mutableStateOf("Ready") }
@@ -227,7 +228,6 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
         pendingSpyRecording = false
         activeRecording?.stop()
         activeRecording = null
-        spyMode = false
         status = message
     }
 
@@ -246,10 +246,9 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
                         activeRecording = null
                         pendingSpyRecording = false
                         if (event.hasError()) {
-                            spyMode = false
                             status = "Spy failed: ${event.error}"
                         } else {
-                            status = "Spy recording saved"
+                            status = "LIVE MODE"
                         }
                     }
                 }
@@ -286,12 +285,15 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
                 provider.unbindAll()
                 if (spyMode) {
                     imageCapture = null
+                    spyVideoCapture = video
                     camera = provider.bindToLifecycle(lifecycleOwner, selector, video)
                     liveZoomRange = currentZoomRange(camera)
-                    applyCameraState(camera, selectedCamera, iso, shutterMs, ev, focus, wbMode, effectiveZoom(zoom, focusZoomEnabled, liveZoomRange))
-                    status = "Spy camera ready"
+                    zoom = 1f.coerceIn(liveZoomRange.start, liveZoomRange.endInclusive)
+                    applyCameraState(camera, selectedCamera, iso, shutterMs, ev, focus, wbMode, zoom)
+                    if (activeRecording == null && !pendingSpyRecording) status = "LIVE MODE"
                     if (pendingSpyRecording) startSpyRecording(video)
                 } else {
+                    spyVideoCapture = null
                     val capture = captureBuilder.build()
                     imageCapture = capture
                     camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, capture)
@@ -352,6 +354,7 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
         onDispose {
             activeRecording?.stop()
             activeRecording = null
+            spyVideoCapture = null
             ProcessCameraProvider.getInstance(context).get().unbindAll()
         }
     }
@@ -470,16 +473,29 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
                 latestUri = latestUri,
                 isCapturing = isCapturing,
                 spyMode = spyMode,
+                isRecording = activeRecording != null,
                 onGallery = { openGallery(context, latestUri) },
                 onSpy = {
-                    if (spyMode) {
+                    if (activeRecording != null) {
                         stopSpyRecording()
+                    } else if (spyMode) {
+                        val capture = spyVideoCapture
+                        if (capture != null) {
+                            startSpyRecording(capture)
+                        } else {
+                            pendingSpyRecording = true
+                            bindCamera()
+                        }
                     } else {
-                        selectedCamera = oppositeCamera(cameras, selectedCamera)
+                        selectedCamera = widestRearCamera(cameras) ?: selectedCamera
+                        zoom = 1f
                         spyMode = true
-                        pendingSpyRecording = true
+                        pendingSpyRecording = false
                         manualOpen = false
-                        status = "Starting spy recording..."
+                        focusZoomEnabled = false
+                        focusReticle = null
+                        focusLocked = false
+                        status = "LIVE MODE"
                     }
                 },
                 onCapture = {
@@ -734,6 +750,7 @@ private fun BottomDeck(
     latestUri: Uri?,
     isCapturing: Boolean,
     spyMode: Boolean,
+    isRecording: Boolean,
     onGallery: () -> Unit,
     onSpy: () -> Unit,
     onCapture: () -> Unit
@@ -784,7 +801,16 @@ private fun BottomDeck(
         ) {
             Icon(Icons.Filled.VisibilityOff, contentDescription = "Spy mode", tint = if (spyMode) Accent else ComposeColor.White, modifier = Modifier.size(14.dp))
             Spacer(Modifier.width(4.dp))
-            Text(if (spyMode) "STOP" else "SPY", fontSize = 9.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            Text(
+                when {
+                    isRecording -> "STOP"
+                    spyMode -> "REC"
+                    else -> "SPY"
+                },
+                fontSize = 9.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
         }
     }
 }
@@ -883,6 +909,7 @@ private fun discoverBackCameras(context: Context): List<LensInfo> {
             rawSupported = raw,
             manualSensor = manualSensor,
             manualFocus = manualFocus,
+            focalLength = focal,
             isoRange = iso,
             evRange = evRange,
             zoomRange = 1f..10f,
@@ -1076,19 +1103,18 @@ private data class LensInfo(
     val rawSupported: Boolean,
     val manualSensor: Boolean,
     val manualFocus: Boolean,
+    val focalLength: Float? = null,
     val isoRange: Range<Int>? = null,
     val evRange: ClosedFloatingPointRange<Float>? = null,
     val zoomRange: ClosedFloatingPointRange<Float>? = null,
     val facing: Int? = null
 )
 
-private fun oppositeCamera(cameras: List<LensInfo>, selected: LensInfo?): LensInfo? {
-    val oppositeFacing = when (selected?.facing) {
-        CameraCharacteristics.LENS_FACING_FRONT -> CameraCharacteristics.LENS_FACING_BACK
-        CameraCharacteristics.LENS_FACING_BACK -> CameraCharacteristics.LENS_FACING_FRONT
-        else -> null
-    }
-    return cameras.firstOrNull { it.facing == oppositeFacing } ?: cameras.firstOrNull { it.id != selected?.id } ?: selected
+private fun widestRearCamera(cameras: List<LensInfo>): LensInfo? {
+    return cameras
+        .filter { it.facing == CameraCharacteristics.LENS_FACING_BACK }
+        .minByOrNull { it.focalLength ?: Float.MAX_VALUE }
+        ?: cameras.firstOrNull { it.facing == CameraCharacteristics.LENS_FACING_BACK }
 }
 
 private fun effectiveZoom(baseZoom: Float, focusZoomEnabled: Boolean, range: ClosedFloatingPointRange<Float>): Float {
