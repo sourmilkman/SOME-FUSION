@@ -23,7 +23,7 @@ The app is Android-only. The PC is only the development machine.
 - Core manual controls with unsupported controls shown disabled.
 - Focus zoom toggle for manual focus assist.
 - Tap-to-focus with a visible focus reticle.
-- Live spy mode blacks out the preview, arms the widest rear camera, then records and stops from the same button.
+- Floating Live Mode starts a visible foreground camera service with an over-apps REC/STOP control for recording while using other apps.
 - Visible build model and Git commit label in the UI.
 
 ## Install Output

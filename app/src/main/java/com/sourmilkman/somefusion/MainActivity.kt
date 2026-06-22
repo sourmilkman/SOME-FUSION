@@ -1,22 +1,30 @@
 package com.sourmilkman.somefusion
 
 import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.provider.Settings
 import android.util.Range
+import android.view.Gravity
 import android.view.Window
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -98,6 +106,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.app.NotificationCompat
+import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.Observer
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -147,6 +157,186 @@ class MainActivity : ComponentActivity() {
                     or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                 )
         }
+    }
+}
+
+class FloatingSpyService : LifecycleService() {
+    private var recording: Recording? = null
+    private var videoCapture: VideoCapture<Recorder>? = null
+    private var overlayView: TextView? = null
+    private lateinit var windowManager: WindowManager
+
+    override fun onCreate() {
+        super.onCreate()
+        windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        createNotificationChannel()
+        startCameraForeground("LIVE MODE")
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
+        if (intent?.action == ACTION_ENTER_LIVE) {
+            enterLiveMode()
+        }
+        return START_STICKY
+    }
+
+    override fun onDestroy() {
+        recording?.stop()
+        recording = null
+        overlayView?.let { runCatching { windowManager.removeView(it) } }
+        overlayView = null
+        runCatching { ProcessCameraProvider.getInstance(this).get().unbindAll() }
+        super.onDestroy()
+    }
+
+    private fun enterLiveMode() {
+        if (!Settings.canDrawOverlays(this)) {
+            stopSelf()
+            return
+        }
+        showOverlay()
+        bindWideRearVideo()
+        updateButton()
+        updateNotification("LIVE MODE")
+    }
+
+    private fun bindWideRearVideo() {
+        val lens = widestRearCamera(discoverBackCameras(this)) ?: return
+        val providerFuture = ProcessCameraProvider.getInstance(this)
+        providerFuture.addListener({
+            val provider = providerFuture.get()
+            val selector = CameraSelector.Builder()
+                .addCameraFilter { infos -> infos.filter { Camera2CameraInfo.from(it).cameraId == lens.id } }
+                .build()
+            val recorder = Recorder.Builder()
+                .setQualitySelector(QualitySelector.from(Quality.HIGHEST))
+                .build()
+            val capture = VideoCapture.withOutput(recorder)
+            runCatching {
+                provider.unbindAll()
+                val boundCamera = provider.bindToLifecycle(this, selector, capture)
+                applyCameraState(boundCamera, lens, lens.isoRange?.lower?.toFloat() ?: 100f, 8f, 0f, 0f, WbMode.Auto, 1f)
+                videoCapture = capture
+            }.onFailure {
+                updateNotification("Camera unavailable")
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun toggleRecording() {
+        val active = recording
+        if (active != null) {
+            active.stop()
+            recording = null
+            updateButton()
+            updateNotification("LIVE MODE")
+            return
+        }
+
+        val capture = videoCapture ?: run {
+            bindWideRearVideo()
+            return
+        }
+        recording = capture.output
+            .prepareRecording(this, videoOutputOptions(this))
+            .start(ContextCompat.getMainExecutor(this)) { event ->
+                when (event) {
+                    is VideoRecordEvent.Start -> {
+                        updateButton()
+                        updateNotification("Recording")
+                    }
+                    is VideoRecordEvent.Finalize -> {
+                        recording = null
+                        updateButton()
+                        updateNotification(if (event.hasError()) "Recording failed" else "LIVE MODE")
+                    }
+                }
+            }
+    }
+
+    private fun showOverlay() {
+        if (overlayView != null) return
+        val button = TextView(this).apply {
+            text = "REC"
+            textSize = 13f
+            setTextColor(Color.BLACK)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(0xFFE8B84D.toInt())
+            }
+            setOnClickListener { toggleRecording() }
+            setOnLongClickListener {
+                stopSelf()
+                true
+            }
+        }
+        val params = WindowManager.LayoutParams(
+            140,
+            140,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            android.graphics.PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.END
+            x = 28
+            y = 260
+        }
+        windowManager.addView(button, params)
+        overlayView = button
+    }
+
+    private fun updateButton() {
+        overlayView?.text = if (recording == null) "REC" else "STOP"
+    }
+
+    private fun startCameraForeground(state: String) {
+        val notification = notification(state)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun updateNotification(state: String) {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(NOTIFICATION_ID, notification(state))
+    }
+
+    private fun notification(state: String): android.app.Notification {
+        val openIntent = Intent(this, MainActivity::class.java)
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.presence_video_online)
+            .setContentTitle("SOME FUSION camera active")
+            .setContentText(state)
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .setSilent(true)
+            .build()
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(
+                NotificationChannel(CHANNEL_ID, "SOME FUSION camera", NotificationManager.IMPORTANCE_LOW)
+            )
+        }
+    }
+
+    companion object {
+        const val ACTION_ENTER_LIVE = "com.sourmilkman.somefusion.action.ENTER_LIVE"
+        private const val CHANNEL_ID = "some_fusion_camera"
+        private const val NOTIFICATION_ID = 41
     }
 }
 
@@ -476,26 +666,19 @@ private fun CameraScreen(cameraExecutor: ExecutorService) {
                 isRecording = activeRecording != null,
                 onGallery = { openGallery(context, latestUri) },
                 onSpy = {
-                    if (activeRecording != null) {
-                        stopSpyRecording()
-                    } else if (spyMode) {
-                        val capture = spyVideoCapture
-                        if (capture != null) {
-                            startSpyRecording(capture)
-                        } else {
-                            pendingSpyRecording = true
-                            bindCamera()
-                        }
+                    if (!Settings.canDrawOverlays(context)) {
+                        status = "Allow display over other apps"
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:${context.packageName}")
+                            )
+                        )
                     } else {
-                        selectedCamera = widestRearCamera(cameras) ?: selectedCamera
-                        zoom = 1f
-                        spyMode = true
-                        pendingSpyRecording = false
-                        manualOpen = false
-                        focusZoomEnabled = false
-                        focusReticle = null
-                        focusLocked = false
-                        status = "LIVE MODE"
+                        val serviceIntent = Intent(context, FloatingSpyService::class.java)
+                            .setAction(FloatingSpyService.ACTION_ENTER_LIVE)
+                        ContextCompat.startForegroundService(context, serviceIntent)
+                        (context as? MainActivity)?.moveTaskToBack(true)
                     }
                 },
                 onCapture = {

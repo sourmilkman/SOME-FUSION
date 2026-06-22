@@ -32,11 +32,11 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.6.1"
+        versionName = "0.7.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "BUILD_SHA", "\"${gitSha()}\"")
-        buildConfigField("String", "BUILD_MODEL", "\"SOME FUSION 0.6.1\"")
+        buildConfigField("String", "BUILD_MODEL", "\"SOME FUSION 0.7.0\"")
     }
 
     buildTypes {
@@ -66,6 +66,7 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.service)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
