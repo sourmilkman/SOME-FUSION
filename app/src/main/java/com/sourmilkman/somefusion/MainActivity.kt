@@ -258,15 +258,11 @@ class FloatingSpyService : LifecycleService() {
     private fun showOverlay() {
         if (overlayView != null) return
         val button = TextView(this).apply {
-            text = "REC"
+            text = ""
             textSize = 13f
             setTextColor(Color.BLACK)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             gravity = Gravity.CENTER
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(0xFFE8B84D.toInt())
-            }
             setOnClickListener { toggleRecording() }
             setOnLongClickListener {
                 stopSelf()
@@ -289,7 +285,10 @@ class FloatingSpyService : LifecycleService() {
     }
 
     private fun updateButton() {
-        overlayView?.text = if (recording == null) "REC" else "STOP"
+        overlayView?.background = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.OVAL
+            setColor(if (recording == null) LIVE_AMBER else RECORDING_RED)
+        }
     }
 
     private fun startCameraForeground(state: String) {
@@ -337,6 +336,8 @@ class FloatingSpyService : LifecycleService() {
         const val ACTION_ENTER_LIVE = "com.sourmilkman.somefusion.action.ENTER_LIVE"
         private const val CHANNEL_ID = "some_fusion_camera"
         private const val NOTIFICATION_ID = 41
+        private const val LIVE_AMBER = 0xFFE8B84D.toInt()
+        private const val RECORDING_RED = 0xFFFF8A8A.toInt()
     }
 }
 
