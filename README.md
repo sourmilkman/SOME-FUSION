@@ -23,6 +23,7 @@ The app is Android-only. The PC is only the development machine.
 - Core manual controls with unsupported controls shown disabled.
 - Focus zoom toggle for manual focus assist.
 - Tap-to-focus with a visible focus reticle.
+- Spy mode toggles opposite-camera video recording with the preview blacked out.
 - Visible build model and Git commit label in the UI.
 
 ## Install Output
